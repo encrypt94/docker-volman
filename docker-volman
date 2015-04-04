@@ -9,7 +9,7 @@ usage() {
     printf "\nMount and umount volumes to running containers\n"
     printf "\nCommands:\n"
     printf "\tmount\t Mount a volume to a running container\n"
-    printf "\tumount\t Umount a volume from a running container\n"
+    printf "\tumount\t Unmount a volume from a running container\n"
     printf "\tlist\t List volumes mounted to a container\n"
 }
 
