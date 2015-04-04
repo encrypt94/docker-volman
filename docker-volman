@@ -1,0 +1,143 @@
+#!/bin/sh
+
+set -e
+
+# Usage stuff
+
+usage() {
+    printf "Usage: docker-volman COMMAND [arg...]\n"
+    printf "\nMount and umount volumes to running containers\n"
+    printf "\nCommands:\n"
+    printf "\tmount\t Mount a volume to a running container\n"
+    printf "\tumount\t Umount a volume from a running container\n"
+    printf "\tlist\t List volumes mounted to a container\n"
+}
+
+usage_mount() {
+    echo "Usage: docker-volman mount /path/to/host/volume:/path/to/container/volume container-id"
+}
+
+usage_umount() {
+    echo "Usage: docker-volman umount /path/to/container/volume container-id"
+}
+
+usage_list() {
+    echo "Usage: docker-volman list container-id"
+}
+
+# Helpers
+
+docker_nsenter() {
+    pid=$(docker inspect --format "{{.State.Pid}}" "$1")
+    env=$(cat /proc/$pid/environ | xargs -0 | grep =)
+    opts="--target $pid --mount --uts --ipc --net --pid --"
+    shift
+    nsenter $opts env -i - $env "$@"
+}
+
+
+check_container_is_running() {
+    docker inspect $1 > /dev/null
+    if [ $(docker inspect --format "{{.State.Running}}" $1) == "false" ];
+    then
+	>&2 echo "error: container $1 is not running"
+	exit 1
+    fi
+}
+
+# Volman stuff
+
+# docker_mount code is from this post
+# https://jpetazzo.github.io/2015/01/13/docker-mount-dynamic-volumes/
+# by Jérôme Petazzoni
+
+docker_mount() {
+    hostpath=$1
+    contpath=$2
+    container=$3
+    check_container_is_running $container
+    
+    realpath=$(readlink --canonicalize $hostpath)
+    filesys=$(df -P $realpath | tail -n 1 | awk '{print $6}')
+
+    while read dev mount junk
+    do [ $mount = $filesys ] && break
+    done </proc/mounts
+    [ $mount = $filesys ] # Sanity check!
+
+    while read a b c subroot mount junk
+    do [ $mount = $filesys ] && break
+    done < /proc/self/mountinfo
+    [ $mount = $filesys ] # Moar sanity check!
+
+    subpath=$(echo $realpath | sed s,^$filesys,,) # to be fixed
+    devdec=$(printf "%d %d" $(stat --format "0x%t 0x%T" $dev))
+
+    docker_nsenter $container sh -c \
+      	     "[ -b $dev ] || mknod --mode 0600 $dev b $devdec"
+    docker_nsenter $container mkdir /tmpmnt
+    docker_nsenter $container mount $dev /tmpmnt
+    docker_nsenter $container mkdir -p $contpath
+    docker_nsenter $container mount -o bind /tmpmnt/$subroot/$subpath $contpath
+    docker_nsenter $container umount /tmpmnt
+    docker_nsenter $container rmdir /tmpmnt
+}
+
+docker_umount() {
+    volume=$1
+    container=$2
+    check_container_is_running $container
+    
+    docker_nsenter $container umount $1
+    docker_nsenter $container rmdir $1
+}
+
+docker_volumes_list() {
+    check_container_is_running $1
+    pid=$(docker inspect --format "{{.State.Pid}}" "$1")
+    while read s;
+    do
+	hostpath=$(echo $s | cut -f4 -d " ")
+	containerpath=$(echo $s | cut -f5 -d " ")
+	mode=$(echo $s | cut -f6 -d " " | cut -f 1 -d ",")
+	echo $hostpath:$containerpath:$mode
+    done < /proc/$pid/mountinfo
+}
+
+if [[ $EUID -ne 0 ]];
+then
+    echo "docker-volman must be run as root" 1>&2
+    exit 1
+fi
+
+case $1 in
+    "mount")
+	if [ $# -lt 3 ];
+	then
+	    usage_mount
+	    exit 1
+	fi
+	hostpath=$(sed 's/:.*//' <<< "$2")
+	containerpath=$(sed 's/^[^:]*://' <<< "$2")
+	docker_mount $hostpath $containerpath $3
+	;;
+    "umount")
+	if [ $# -lt 3 ];
+	then
+	    usage_umount
+	    exit 1
+	fi
+	docker_umount $2 $3
+	;;
+    "list")
+	if [ $# -lt 2 ];
+	then
+	    usage_list
+	    exit 1
+	fi
+	docker_volumes_list $2
+	;;
+    *)
+	usage
+	;;
+esac
