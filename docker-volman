@@ -69,12 +69,12 @@ docker_mount() {
     do [ $mount = $filesys ] && break
     done < /proc/self/mountinfo
     [ $mount = $filesys ] # Moar sanity check!
-
     subpath=$(echo $realpath | sed s,^$filesys,,) # to be fixed
+    dev=$(readlink --canonicalize $dev)
     devdec=$(printf "%d %d" $(stat --format "0x%t 0x%T" $dev))
 
     docker_nsenter $container sh -c \
-      	     "[ -b $dev ] || mknod --mode 0600 $dev b $devdec"
+      	     "[ -b $dev ] || mknod -m 0600 $dev b $devdec"
     docker_nsenter $container mkdir /tmpmnt
     docker_nsenter $container mount $dev /tmpmnt
     docker_nsenter $container mkdir -p $contpath
